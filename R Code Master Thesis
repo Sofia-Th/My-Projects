@@ -1,0 +1,1558 @@
+#-------------------------------------------------
+# -------- Masterarbeitsscript Sofia Thai --------
+# ------------------------------------------------
+
+# Daten laden
+df <- read.csv(file = "Cowell_MA.csv", header = T, sep ="\t")
+
+# Relevante Packages laden nach Installation
+library(plyr) # fuer revalue
+library(dplyr)
+library(tidyr)
+library(naniar)
+library(ggplot2)
+library(data.table)
+library(nlme)
+library(lme4)
+library(Hmisc)
+library(umx) # fuer Cronbach Alpha
+library(psy) # fuer Cronbach Alpha von nur 2 items
+library(car)
+library(rgl)
+library(scatterplot3d)
+library(r2glmm) # fuer R-Quadrate
+library(sjPlot) # fuer Interaction Plot
+library(sjmisc) # fuer Interaction Plot
+library(doBy) # fuer deskriptive Statistiken
+library(mgcv) # fuer nonlinearer Zusammenhang
+library(ggjoy) # fuer density plots
+library(moments)
+library(reghelper)
+
+## Multilevel Modeling: extra_ Limitierung der Iterationen fuer Vorbeugung von Error Meldungen bei Hinzufuegen von random effects
+# zusaetzlicher Befehl im Code von lme(), undzwar control=ctr
+ctrl <- lmeControl(opt='optim')
+
+#----------------------------------------------------------------------------
+# -------- A. Ausgangsdatensatz (Daten bereinigen, ID ausschliessen) --------
+# ---------------------------------------------------------------------------
+
+# Date (Labortag) aufsplitten und nur das Teilnahmejahr nehmen, am Schluss heisst die Variable mit Teilnahmejahr part_year
+age_split<-df %>% select ("Date") %>% separate(Date,c("Lab_Day", "Lab_Month","Lab_Year"))
+df["part_year"] <- 20 # 20 hinzufuegen, weil 20... 2017 oder 2018
+df$part_year <- paste0(df$part_year,age_split$Lab_Year)
+df$part_year<-as.numeric(df$part_year)
+
+### Differenz zwischen Teilnahmejahr und Geburtsjahr = Alter
+df$age<-df$part_year - df$DD12_01
+
+
+#========================================================================================
+#===== 0. ï..Nummerierung in Nummerierung umbenennen, wahrscheinlich ein Lesefehler =====
+#========================================================================================
+df$Nummerierung<-df$ï..Nummerierung
+df <- select(df, -ï..Nummerierung)
+
+
+## Deskriptive Statistiken von der Ausgangspop
+mean(df$age, na.rm =T)
+sd(df$age, na.rm =T)
+range(df$age, na.rm =T)
+nlevels(as.factor(df$id))
+table(df$DD01)
+
+#======================================================
+#========== 1. genereller Ausschluss / Abbruch ========
+#======================================================
+
+##########################################################
+# 1.1 Faelle ausschliessen aufgrund von Probandeninfos ####
+##########################################################
+
+#### Probanden rausnehmen von Faellen, die abgebrochen haben (14 von den 37 ID sind gar nicht im Datensatz drinnen, also nur -14)
+df_new<- filter(df,!id %in% c(112,	127,	135,	139,	141,	161,	165,	171,	190,	203,	232,	272,	279, 282,	290,	293,	300,	302,	313,	314,	317,	334,	336,	343,	345,	350,	362,	363,	367,	370,	372,	374,	389,392))
+
+
+# ==================================================================================
+# ===== 1.2. Probanden, die nur eins von beiden Studientagen mitgemacht haben ======
+# ==================================================================================
+
+df_new<-df_new %>% filter(!id %in% c(158,175, 206, 301, 304, 331,347,442))
+
+# 206 hat kein Baseline Tagebuch
+# 158,175, 301, 304, 331,347,442 hat kein Self-Focus Tagebuch
+
+
+
+# ======================================
+# 2. SUBSETS MACHEN; LABOR UND DIARIES ====
+#=======================================
+df_Labor <- df_new %>% filter (QUESTNNR == "AVZ6LABOR")
+df_Diary <- df_new %>% filter (QUESTNNR == "AVZ6DIARY")
+
+
+#===============================
+#======== 3. FB Labor ==========
+#===============================
+
+# 3.1
+# LABOR FB: Faelle ausschliessen: ZU SCHNELL LABFRAGEBOGEN 
+df_Labor_new <- df_Labor %>%  filter(TIME_SUM > 442 & !is.na(TIME_SUM)) 
+
+# Vergleich N vorher und nachher 
+nlevels(as.factor(df_Labor$id)) # vor Filterung
+nlevels(as.factor(df_Labor_new$id)) # nach Filterung
+
+# 4 Personen ausgeschlossen (id = 209, 306 , 413, 440) 
+## Gefilterte Faelle anschauen
+df_Labor %>% filter(TIME_SUM < 442 | is.na(TIME_SUM)) %>% select ("id", "ProbAnswQuick", "TIME_SUM")
+
+
+#==========================================
+#======== 4. FB Diary (df_Diary) ==========
+#==========================================
+
+# 4.1
+# Filterung von Probanden aus Laborfragebogen zu schnell
+df_Diary_filt_Lab<- df_Diary %>% filter(!id %in% c(209, 306, 413, 440))
+
+c(209, 306, 413, 440) %in% df_Diary_filt_Lab$id
+
+#############################################################
+#### 4.2. Probanden mit falscher Manipulation rausnehmen ####
+#############################################################
+
+# 4.2.1. falscher Link versendet oder Link nicht rechtzeitig angeschaut 
+
+df_Diary_new<- df_Diary_filt_Lab %>% filter(!id %in% c(113,129,149,209,219,224,234,238,245,247,248,249,260,262,266,273,280,286,339,352,353,380))
+# 21 Probanden weggenommen (einer wurde schon vorher weggenommen, ID 209)
+
+
+###################################################################################
+# 4.3. Leere BL oder in SF Tage, keine einzige Questionnaire ausgefuellt haben #### 
+###################################################################################
+
+# 4.3.1
+# Variablen rauspicken, bei denen die Probanden etwas reinschreiben mussten UND nur Skala von 0-6 hat
+df_Diary_new_reduc <- df_Diary_new %>%  select(Type_int,	P_gender,		P_age, P_close,	P_quality,	P_focus,	P_conc,	Dev_int,	ES_own,	ES_other,	ES_const,	FS_1,	FS_2,	FS_3,	FS_4,	FS_5,	FS_6,	FS_7,	FS_8,	FS_9,	FS_10,	FS_11,	FS_12, Ach_pos,	Av_neg,	Int_1,	Int_2,	Int_3,	Int_4,	Int_5,	Int_6,	Int_7,	Int_8,	Int_9, WB_other,	WB_own,	EI_1,	EI_2,	EI_3,	EI_4)
+
+# 4.3.1.1
+# Alle Missing Werte rausfiltern
+df_Diary_new_reduc <- df_Diary_new_reduc  %>% mutate_all(na_if, -880)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, -99)
+df_Diary_new_reduc<- df_Diary_new_reduc %>% mutate_all(na_if, -88)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, 88)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, -77)
+df_Diary_new_reduc  <- df_Diary_new_reduc %>% mutate_all(na_if, 99)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, 77)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, 11)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, -9)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, -8)
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate_all(na_if, -2)
+
+# 4.3.2
+# Grosser Datensatz zusammenbasteln: 1. P_involv reinnehmen, 2. Nummerierung und alle anderen Angaben in TB
+# speziell noch fuer P_involv, als Kolonne zum df_Diary_new hinzufuegen, weil der andere NA Filterregeln hat als andere Variablen
+mit_NA_Min_sig <-  df_Diary_new %>% replace_with_na(replace = list(Min_sig = c(-99, -55, -9)))
+mit_NA_Min_int <- df_Diary_new  %>% replace_with_na(replace = list(Min_int = c(-99, -55, -9, -88, -77)))
+mit_NA_Descrip<- df_Diary_new  %>% replace_with_na(replace = list(Descrip = c(-99, -55, -9, -88, -77, "-")))
+mit_NA_P_involv <- df_Diary_new  %>% replace_with_na(replace = list(P_involv = c(-99, -88, -880, -77, -7)))
+mit_NA_P_who <- df_Diary_new %>% replace_with_na(replace = list(P_who = c(-99, -55, -9, -88, -77, 99, "-")))
+
+
+df_Diary_new_reduc$Min_sig <-   mit_NA_Min_sig$Min_sig
+df_Diary_new_reduc$Min_int<-    mit_NA_Min_int$Min_int
+df_Diary_new_reduc$Descrip <-   mit_NA_Descrip$Descrip
+df_Diary_new_reduc$P_involv <-  mit_NA_P_involv$P_involv
+df_Diary_new_reduc$P_who <-     mit_NA_P_who$P_who
+
+# 4.3.3
+# fuer jeden Probanden die Prozentsatz von NA ausrechnen
+df_Diary_new_reduc <- df_Diary_new_reduc %>% mutate(NA_percentage=rowMeans(is.na(.)))
+as_tibble(df_Diary_new_reduc %>% select(NA_percentage, P_involv, Descrip, ES_own)) # ueberpruefen, ob Berechnung realisisch ist
+
+# 4.3.4
+# Den Rest des Datensatzes zusammenbauen
+df_Diary_new_reduc$Rel_Code <- df_Diary_new$Rel_Code
+df_Diary_new_reduc$Rel_related <- df_Diary_new$Rel_related
+df_Diary_new_reduc$Rel_Whg<- df_Diary_new$Rel_Whg
+df_Diary_new_reduc$Day <- df_Diary_new$Day
+df_Diary_new_reduc$VL <- df_Diary_new$VL
+df_Diary_new_reduc$Place <- df_Diary_new$Place
+df_Diary_new_reduc$Manip <- df_Diary_new$Manip
+df_Diary_new_reduc$Place <- df_Diary_new$Place
+df_Diary_new_reduc$ProbManipHome <- df_Diary_new$ProbManipHome
+df_Diary_new_reduc$NoteManipTime <- df_Diary_new$NoteManipTime
+df_Diary_new_reduc$Rec <- df_Diary_new$Rec
+df_Diary_new_reduc$NumControl <- df_Diary_new$NumControl
+df_Diary_new_reduc$NumSelf <- df_Diary_new$NumSelf
+df_Diary_new_reduc$NumOther <- df_Diary_new$NumOther
+df_Diary_new_reduc$Time_rec <- df_Diary_new$Time_rec
+df_Diary_new_reduc$ProbIntervalTime <- df_Diary_new$ProbIntervalTime
+df_Diary_new_reduc$Int_sit <- df_Diary_new$Int_sit
+df_Diary_new_reduc$Answ_q <- df_Diary_new$Answ_q
+df_Diary_new_reduc$IntSit <- df_Diary_new$IntSit
+df_Diary_new_reduc$Nummerierung <- df_Diary_new$Nummerierung
+df_Diary_new_reduc$Date <- df_Diary_new$Date
+df_Diary_new_reduc$IntSit <- df_Diary_new$IntSit
+df_Diary_new_reduc$id <- df_Diary_new$id
+
+# 4.3.5
+# Umbenennen, weil jetzt alle anderen Variablen im Diary auch drinnen sind
+df_Diary_new_compl <- df_Diary_new_reduc
+
+
+# 4.3.6. Aggregation pro Tag und pro Proband 
+# separat, ausrechnen welche ID wegkommen, hat andere row-Zahl dann, von 24 auf 3 pro Person
+
+# 4.3.6.1
+# Tag und ID in Faktoren umwandeln, damit nach Tag und Person aggregieren kann
+class(df_Diary_new_compl$Date)
+class(df_Diary_new_compl$id)
+df_Diary_new_compl$id_fact<-as.factor(df_Diary_new_compl$id)
+df_Diary_new_compl$Day_fact<-as.factor(df_Diary_new_compl$Day)
+
+# 4.3.6.2
+# Aggregation
+Agg_NA_percentage<-aggregate(NA_percentage ~ id_fact + Date + Manip, df_Diary_new_compl, mean)
+Agg_NA_percentage <- Agg_NA_percentage[order(Agg_NA_percentage$id_fact),]
+
+# 4.3.6.3
+# Filtern von denen, die einen Prozentsatz von ueber 0.9 Missings am Baseline Tag haben
+df_Diary_BL_unvollst <- Agg_NA_percentage %>% filter(NA_percentage > 0.9 & Manip == 3) # Probanden waehrend BL Tag und mehr als 90% NA haben
+df_Diary_SF_unvollst <- Agg_NA_percentage %>% filter(NA_percentage > 0.9 & Manip == 1) # Probanden waehrend SF Tag und mehr als 90% NA haben
+
+df_Diary_BL_vollst <- Agg_NA_percentage %>% filter(NA_percentage < 0.9 & Manip == 3) # Probanden waehrend BL Tag und weniger als 90% NA haben
+df_Diary_SF_vollst <- Agg_NA_percentage %>% filter(NA_percentage < 0.9 & Manip == 1) # Probanden waehrend SF Tag und weniger als 90% NA haben
+
+
+# schauen, wie viele rausgefallen sind
+nrow(df_Diary_SF_unvollst)
+nrow(df_Diary_BL_unvollst)
+
+# ueberpruefen, welche rausgefallen sind: 
+df_Diary_BL_unvollst$id_fact
+df_Diary_SF_unvollst$id_fact
+
+df_Diary_vollst<-rbind(df_Diary_SF_vollst, df_Diary_BL_vollst) # !!!AGGREGIERTE FORM, df_Diary_new ist einzelne Eintraege!!!!
+# Proband 369 rausfiltern, weil SF nicht ausgefuellt
+
+# =========================================================
+# 5. Tagebucheintraege, die keine Interaktion hatten ======
+# =========================================================
+
+# 5.1
+# Proband, von vorher rausfiltern, der zu viele Missings hatte
+df_Diary_new_compl_Int <- df_Diary_new_compl[ !(df_Diary_new_compl$id_fact %in% c(369)), ]
+
+# Filtern der Diary Eintraege mit IA
+df_Diary_new_compl_Int_only <- df_Diary_new_compl_Int %>% filter(IntSit == 2)
+
+# Filtern der Diary Eintraege ohne IA
+(df_Diary_new_Sit_only1 <- df_Diary_new_compl_Int %>% filter(IntSit == 1)) # TB Eintraege mit Situationen
+(df_Diary_new_Sit_only2 <- df_Diary_new_compl_Int %>% filter(IntSit == -99)) # TB Eintraege mit unklaren
+(df_Diary_new_Sit_only3 <- df_Diary_new_compl_Int %>% filter(IntSit == -88)) # TB Eintraege mit unklaren
+(df_Diary_new_Sit_only4 <- df_Diary_new_compl_Int %>% filter(is.na(IntSit)))
+
+nlevels(df_Diary_new_compl_Int_only$id_fact)
+Probanden<-df_Diary_new_compl_Int_only %>% group_by(id_fact)
+
+
+### 283!!?? Probanden in Diary nach den ganzen Filterungen --> ID 369 ist nicht mehr im daten_G13
+
+
+# ========================================================================================================================================
+# ===== 6. Probanden, die den Laborfragebogen gemacht haben, aber keine Diaries ausgefuellt haben aus dem Labfragebogen ausschliessen =====
+# ========================================================================================================================================
+
+# unten sind alle ID's gefiltert, die oben herausgefunden wurden, die irgendwelche Kriterien nicht erfuellt haben, also das sind die aktuellsten, obwohl andere Dataframes dafuer genommen wurden
+
+N_Abgleich_Lab <-df_Labor %>% filter(!id %in% c(112,	127,	135,	139,	141,	161,	165,	171,	190,	203,	232,	272,	279, 282,	290,	293,	300,	302,	313,	314,	317,	334,	336,	343,	345,	350,	362,	363,	367,	370,	372,	374,	389,392,
+                                 209, 306, 413, 440,
+                                 113,129,149,209,219,224,234,238,245,247,248,249,260,262,266,273,280,286,339,352,353,380,
+                                 369))
+nlevels(as.factor(N_Abgleich_Lab$id)) # Labfragebogen hat N= 278
+
+N_Abgleich_Diary <-df_Diary %>% filter(!id %in% c(112,	127,	135,	139,	141,	161,	165,	171,	190,	203,	232,	272,	279, 282,	290,	293,	300,	302,	313,	314,	317,	334,	336,	343,	345,	350,	362,	363,	367,	370,	372,	374,	389,392,
+                                                209, 306, 413, 440,
+                                                113,129,149,209,219,224,234,238,245,247,248,249,260,262,266,273,280,286,339,352,353,380,
+                                                369)) 
+
+nlevels(as.factor(N_Abgleich_Diary$id)) # Diary hat N = 274
+
+# anschauen, welche ID tatsaechlich beide ausgefuellt haben
+intersect(N_Abgleich_Diary$id, N_Abgleich_Lab$id) 
+
+# anschauen, welche ID nur Lab ausgefuellt haben und keine Diary (ID = 111, 140, 456, 457)
+# View(subset(N_Abgleich_Lab, !(id %in% N_Abgleich_Diary$id)))
+
+# anschauen, welche ID nur Diary ausgefuellt haben und keine Lab (niemand)
+# View(subset(N_Abgleich_Diary, !(id %in% N_Abgleich_Lab$id)))
+
+### Herausfiltern, damit definitive Labor ID hat
+Lab_def<-N_Abgleich_Lab %>% filter(!id %in% c(111, 140, 456, 457))
+Diary_def <- N_Abgleich_Diary 
+
+
+
+
+#-----------------------------------------------------------------------------
+#-------------------------- B. Datenaufbereitung -----------------------------
+#-----------------------------------------------------------------------------
+
+# Relevante Datensaetze: Lab_def und Diary_def
+
+# ===================================================================
+# 1. ES_own: ersetzen der Werte, bei der Skala abgeschnitten war ====
+# ===================================================================
+
+# nimmt die Personen nicht raus, weil nur einzelne Eintraege betroffen sind, sondern ersetzt ihre Werte nur mit NA
+
+# Zahlen beziehen sich auf die Variable Nummerierung (Nummerierung der Probanden mit abgeschnittene ES-Variablen)
+Nummerierung_abgeschn<- c(723, 1543, 1544, 1545, 2125:2127, 4035,5344:5346, 5353:5355, 5407, 5760, 6159:6161, 6178, 6179, 6384, 6792, 6793, 8007, 8008)
+
+Diary_d <- Diary_def %>% 
+  mutate(ES_own=ifelse(Nummerierung %in%  Nummerierung_abgeschn,NA,ES_own))
+
+# ===================================================================
+# 2. Fehlende Daten mit NA bezeichnen bei Diary Variablen ===========
+# ===================================================================
+# für ES_own, AV_neg, Ach_pos
+SZM<- Diary_d %>% select (Nummerierung, ES_own, Av_neg, Ach_pos) %>% mutate_all(na_if, -99)
+SZM<- SZM %>% select (Nummerierung, ES_own, Av_neg, Ach_pos) %>% mutate_all(na_if, -88)
+SZM<- SZM %>% select (Nummerierung, ES_own, Av_neg, Ach_pos) %>% mutate_all(na_if, -77)
+SZM<- SZM %>% select (Nummerierung, ES_own, Av_neg, Ach_pos) %>% mutate_all(na_if, -9)
+Diary_de<-merge(Diary_d, SZM) # kann einfach mergen, weil es ersetzt damit die SZM Variablen automatisch
+
+
+
+# =================================================================================
+# 3. ZUSAMMENNEHMEN VON BEIDEN DATENSAETZEN DAMIT WIEDER DEN VOLLEN DATENSATZ HAT ====
+# =================================================================================
+daten<-bind_rows(Lab_def, Diary_de)
+
+# ACHTUNG, nachfolgende Berechnugen: Andere Fokus rausnehmenm (die Trainingstage sind schon draussen)
+
+
+# ===============================
+# ==== 4. Bildung von Scores ====
+# ===============================
+
+##############################################################################
+# 4.1 Trait Importance und Attainability Family und Relationship Goals separat ####
+##############################################################################
+
+# Family
+daten$fam_trait_imp <- rowMeans(subset(daten, select = c(ZW01_06, ZW01_14, ZW01_22, ZW01_30)), na.rm = TRUE)-1
+daten$fam_attain <-rowMeans(subset(daten, select = c(ZW02_06, ZW02_14, ZW02_22, ZW02_30)), na.rm = TRUE)-1
+## Macht die anderen Zeilen von den Diaries zu NaN...
+
+# Relationship
+daten$rel_trait_imp <-rowMeans(subset(daten, select = c(ZW01_02, ZW01_10, ZW01_18, ZW01_26)), na.rm = TRUE)-1
+daten$rel_attain <-rowMeans(subset(daten, select = c(ZW02_02, ZW02_10, ZW02_18, ZW02_26)), na.rm = TRUE)-1
+
+#( kreiert dann NaN bei den Diaries, diese werden umkodiert in NA)
+is.nan.data.frame <- function(x)
+  do.call(cbind, lapply(x, is.nan))
+daten[is.nan(daten)] <- NA
+
+#####################################################################################
+#### 4.2 Trait Importance und Attainability Family und Relationship Goals zusammen ###### 
+#####################################################################################
+
+daten$famrela_imp <- rowMeans(subset(daten, select = c(ZW01_06, ZW01_14, ZW01_22, ZW01_30, ZW01_02, ZW01_10, ZW01_18, ZW01_26)), na.rm = TRUE)-1
+daten$famrela_attain <- rowMeans(subset(daten, select = c(ZW02_02, ZW02_10, ZW02_18, ZW02_26,ZW02_06, ZW02_14, ZW02_22, ZW02_30)), na.rm = TRUE)-1
+
+
+################################################################################# 
+### 4.3 Interne Konsistenz teste, wenn Family und Relationship zusammennimmt #### --> alle alphas sind gerundet ueber 0.8
+#################################################################################
+
+
+CB_fur_goals<- filter(daten_G13_centering ,!id %in% c(298,	168, 268,  296,  320,  365,  434))
+                      
+### Interne Konsistenz fuer Importance von relationship und family goals
+cronbach_trait_imp<-CB_fur_goals %>% filter %>%  select (ZW01_06, ZW01_14, ZW01_22, ZW01_30,
+                                                    ZW01_02, ZW01_10, ZW01_18, ZW01_26) 
+cr_trait_imp<-cronbach_trait_imp[complete.cases(cronbach_trait_imp), ] # nur vollstaendige Faelle nehmen, sonst fkt Funktion nicht
+matr_trait_imp<-data.matrix (cr_trait_imp)
+reliability(cov(matr_trait_imp))
+
+### Interne Konsistenz fuer Attainability von relationship und family goals
+cronbach_attain<-CB_fur_goals %>% filter %>% select (ZW02_02, ZW02_10, ZW02_18, ZW02_26,
+                                                ZW02_06, ZW02_14, ZW02_22, ZW02_30)
+cr_attain<-cronbach_attain[complete.cases(cronbach_attain), ] # nur vollstaendige Faelle nehmen, sonst fkt Funktion nicht
+matr_attain<-data.matrix (cr_attain)
+reliability(cov(matr_attain))
+
+
+
+###########################################################################
+#### 4.4. Faktoranalyse, ob Relationship und Family zusammennehmen kann ### --> nicht so gute Ergebnisse
+########################################################################### --> aber kann ignorieren
+
+# Faktorenanalyse Goal Value
+trait_imp <- Lab_def %>%
+  select (ZW01_06, ZW01_14, ZW01_22, ZW01_30,
+         ZW01_02, ZW01_10, ZW01_18, ZW01_26) 
+
+trait_imp_pca<-princomp(trait_imp)
+summary(trait_imp_pca)
+plot(trait_imp_pca)
+                      
+
+# Faktorenanalyse Goal Expectancy
+attain <- Lab_def %>% select (ZW02_02, ZW02_10, ZW02_18, ZW02_26,
+                            ZW02_06, ZW02_14, ZW02_22, ZW02_30)
+
+attain_pca<-princomp(attain)
+summary(attain_pca)
+plot(attain_pca)
+
+### Signifikanztest
+(factanal_trait_imp<-factanal(trait_imp, factors = 3, rotation ="varimax"))
+(factanal_attain<-factanal(attain, factors = 4, rotation ="varimax"))
+
+
+
+#####################################################################
+#### 4.5 Score: Soziale Motivation aus state Approach und Avoidance ##### --> geht nicht, weil nicht stark genug miteinander korreliert
+##################################################################### --> rechnet mal getrennt und dann noch mit Score und vergleicht
+
+
+# Faktorenanalyse Soc Effort
+SocEff <- daten_alles_filt  %>% select (Ach_pos, ES_own, Av_neg)
+
+# Eignung testen Faktorenanalyse
+# Kaiser Meyer Olkin
+KMO(SocEff)
+# Bartlett Sphericity
+cortest.bartlett(SocEff)
+
+# Hauptkomponentenanalyse
+SocEff_pca<-princomp(SocEff )
+summary(SocEff_pca)
+plot(SocEff_pca)
+
+
+(factanal_trait_imp<-factanal(SocEff, factors = 1, rotation ="varimax"))
+
+# Mittelwert berechnen, wenn es mindestens einen Wert hat von 2, der gueltig ist
+
+# Funktion programmieren
+rowMeansMiss <- function(vars, nvalid) {
+  apply(vars, 1, function(x) ifelse(sum(!is.na(x)) >= nvalid, mean(x, na.rm=TRUE), NA)) }
+
+# neue Score fuer soziale Motivation anhand Mittelwert von Approach und Avoidance Motivation
+daten$soz_mot <- rowMeansMiss(daten[,533:534], nvalid = 1) # geht davon aus, dass der fehlende Wert genau gleich ist wie der vorhandene Wert...
+
+# find out Column number
+which( colnames(df)=="Ach_pos") # 533
+which( colnames(df)=="Av_neg") # 534
+
+
+#### Cronbach Alpha = 0.4, ungenuegend --> fuer Ach pos und Av neg
+cronbach<-daten_alles_agg_filt  %>% select (Ach_pos, Av_neg)
+cronbach$id<- NULL
+cr<-cronbach[complete.cases(cronbach), ] # nur vollstaendige Faelle nehmen, sonst fkt Funktion nicht
+matr<-data.matrix (cr)
+cronbach(cronbach)
+
+#### Cronbach Alpha = 0.4, ungenuegend --> fuer Ach pos und Av neg und ES own
+cronbach<-daten_alles_agg_filt  %>% select (Ach_pos, Av_neg, ES_own)
+cronbach$id<- NULL
+cr<-cronbach[complete.cases(cronbach), ] # nur vollstaendige Faelle nehmen, sonst fkt Funktion nicht
+matr<-data.matrix (cr)
+cronbach(cronbach)
+mean(cronbach)
+
+inter_item <- daten_alles_agg_filt %>% select (Ach_pos, Av_neg, ES_own) %>% 
+  correlate() %>% select(-id) %>% colMeans(na.rm = TRUE)
+
+
+
+############################################
+#### 4.6 Score: 3 P_focus_trait Items  ##### --> geht nicht, weil nicht stark genug miteinander korreliert
+############################################
+
+# Interne Konsistenz fuer 3 Item Loesung P_focus trait 
+cronbach_P_focus_trait<-daten %>% filter %>% select (MR02_01, MR04_01, MR05_01)
+cr_P_focus_trait<-cronbach_P_focus_trait[complete.cases(cronbach_P_focus_trait), ]                                                
+matr_P_focus_trait<-data.matrix (cr_P_focus_trait)
+reliability(cov(matr_P_focus_trait)) # Alpha = 0.65
+
+# Interne Konsistenz fuer 2 Item Loesung
+cronbach_P_focus_trait<-daten %>% filter %>% select (MR04_01,MR04_01, MR05_01)
+cr<-cronbach_P_focus_trait[complete.cases(cronbach_P_focus_trait), ] # nur vollstaendige Faelle nehmen, sonst fkt Funktion nicht
+matr<-data.matrix (cr)
+reliability(cov(matr))
+cronbach(cronbach_P_focus_trait) # auch wenn nur 2 Items nehmen wurde waere das nicht begruendbar und Alpha ist auch schlecht (max. 0.64)
+
+
+##################################################
+#### 4.7 Vollstaendigen Long Format erstellen #### (Lab Angaben werden auf alle Zeilen in Diary kopiert)
+##################################################
+
+setDT(daten)[, fam_trait_imp_Lab:= fam_trait_imp[!is.na(fam_trait_imp)][1L] , by = id]
+setDT(daten)[, rel_trait_imp_Lab:= rel_trait_imp[!is.na(rel_trait_imp)][1L] , by = id]
+setDT(daten)[, fam_attain_Lab:= fam_attain[!is.na(fam_attain)][1L] , by = id]
+setDT(daten)[, rel_attain_Lab:= rel_attain[!is.na(rel_attain)][1L] , by = id]
+setDT(daten)[, famrela_imp:= famrela_imp[!is.na(famrela_imp)][1L] , by = id]
+setDT(daten)[, famrela_attain:= famrela_attain[!is.na(famrela_attain)][1L] , by = id]
+setDT(daten)[, age:= age[!is.na(age)][1L] , by = id]
+daten$sex <-daten$DD01
+setDT(daten)[, sex:= sex[!is.na(sex)][1L] , by = id]
+setDT(daten)[, Ach_pos_trait:= Ach_pos_trait[!is.na(Ach_pos_trait)][1L] , by = id]
+setDT(daten)[, Av_neg_trait:= Av_neg_trait[!is.na(Av_neg_trait)][1L] , by = id]
+setDT(daten)[, P_focus_trait:= P_focus_trait[!is.na(P_focus_trait)][1L] , by = id]
+setDT(daten)[, neurot_trait:= neurot_trait[!is.na(neurot_trait)][1L] , by = id]
+setDT(daten)[, sex:= sex[!is.na(sex)][1L] , by = id]
+setDT(daten)[, intro:= intro[!is.na(intro)][1L] , by = id]
+
+
+##################################################
+#### 4.8 Vollstaendige Wide Format erstellen #####
+##################################################
+
+## Neuen Datensatz erstellen fuer ins wide format
+df_relevant <-daten %>% select (
+  ES_own, P_focus, soz_mot, 
+  id,
+  QUESTNNR,  
+  Manip,
+  Rec) 
+
+# neue Variable erstellen Manip_rec
+df_relevant$Manip_Rec <- paste(df_relevant$Manip, "_", df_relevant$Rec)
+
+# Ausgangsvariablen rausnehmen
+df_relevant_reduc <- subset(df_relevant, select = -c(Manip, Rec))
+
+# ins wide format, jede Person hat nur noch eine Zeile
+df_relevant_wide<-reshape(df_relevant_reduc,
+                          idvar = "id",
+                          timevar = "Manip_Rec",
+                          direction = "wide")
+
+# sortieren nach ID
+df_relevant_sort<-df_relevant_wide[with(df_relevant_wide,order(id)),]
+
+
+# mit Angaben aus Laborfragebogen mergen
+
+# Laborfragebogen erstellen
+df_relevant_Lab <-daten %>% filter (QUESTNNR == "AVZ6LABOR") %>% 
+  select (fam_trait_imp,
+          fam_attain,
+          rel_trait_imp,
+          rel_attain, id)
+
+# Merge
+df_wide<-merge(df_relevant_sort, df_relevant_Lab, by = "id")
+
+summary(df_wide)
+
+# ===================================================================
+# ===================== Manip = 2 rausnehmen: =======================
+# ================ neue Variablenname: Manip_recode =================
+# ===================== und Manip_recode_fac ========================
+# ===================================================================
+
+### ACHTUNG, zuerst Gruppe 2 rauswerfern weil nicht relevant (wirft damit aber keine Laborfragebogen raus)
+daten_G13_mitSit<-subset(daten, Manip!=2 | is.na(daten$Manip))
+
+# Alle Situationen rausnehmen
+daten_G13 <- daten_G13_mitSit %>% filter(IntSit == 2 | is.na(IntSit))
+
+
+# Umkodieren Baseline = 2, Fokus auf Selbst = 1
+daten_G13$Manip_name<-revalue(as.character(daten_G13$Manip), c("3" = "Baseline" ,"1"= "Self-Focus"))
+daten_G13$Manip_recode_num<-as.numeric(revalue(as.character(daten_G13$Manip), c("3" = "2")))
+daten_G13$Manip_recode_num<-as.numeric(revalue(as.character(daten_G13$Manip_recode_num), c("2" = "1", "1" = "2")))
+
+## P_focus noch die fehlenden Daten umkodieren
+daten_G13 <- daten_G13 %>% mutate_all(na_if, -99)
+daten_G13 <- daten_G13 %>% mutate_all(na_if, -88)
+daten_G13 <- daten_G13 %>% mutate_all(na_if, -8)
+daten_G13 <- daten_G13 %>% mutate_all(na_if, -77)
+
+
+###########################################################--> neuer Datensatz: daten_G13_centering mit zentrierte P_focus
+################# 4.9 Mean Centering  #####################--> nicht noetig, weil kein Centering von den AV
+########################################################### --> und wenn es UV ist, dann ist schon auf Person Level da kann nicht person centering machen, hoechstens grand-mean
+
+daten_G13_centering<-daten_G13 %>% 
+  mutate(grand_Ach_pos = Ach_pos - mean(Ach_pos, na.rm=T),
+         grand_Av_neg =  Av_neg - mean(Av_neg, na.rm=T),
+         grand_ES_own = ES_own - mean(ES_own, na.rm=T),
+         grand_P_focus = P_focus - mean(P_focus, na.rm=T),
+         grand_P_close = P_close - mean(P_close, na.rm=T),
+         grand_EI_1 = EI_1 - mean(EI_1, na.rm=T)) %>%
+  
+  group_by(id) %>% mutate(personal_mean_Ach_pos = mean(Ach_pos, na.rm=T),
+                          personal_mean_Av_neg = mean(Av_neg, na.rm=T),
+                          personal_mean_ES_own = mean(ES_own, na.rm=T),
+                          personal_mean_P_focus = mean(P_focus, na.rm=T),
+                          personal_mean_P_close = mean(P_close, na.rm=T),
+                          personal_mean_EI_1 = mean(EI_1, na.rm=T),
+                          person_Ach_pos = Ach_pos - personal_mean_Ach_pos,
+                          person_Av_neg = Av_neg - personal_mean_Av_neg,
+                          person_ES_own = ES_own - personal_mean_ES_own,
+                          person_P_focus = P_focus - personal_mean_P_focus,
+                          person_P_close = P_close - personal_mean_P_close,
+                          person_EI_1 = EI_1 - personal_mean_EI_1) %>% as.data.frame()
+
+
+# Veranschaulichung, was dazukommt
+Test_centering<-daten_G13 %>% select(Ach_pos, Av_neg, ES_own, id, QUESTNNR) %>%
+  mutate(grand_Ach_pos = Ach_pos - mean(Ach_pos, na.rm=T), # Differenz zwischen Wert zu Mittelwert ueber alle
+         grand_Av_neg =  Av_neg - mean(Av_neg, na.rm=T),
+         grand_ES_own = ES_own - mean(ES_own, na.rm=T) ) %>%
+  group_by(id) %>% mutate(personal_mean_Ach_pos = mean(Ach_pos, na.rm=T), # individuelle Mittelwerte
+                          personal_mean_Av_neg = mean(Av_neg, na.rm=T),
+                          personal_mean_ES_own = mean(ES_own, na.rm=T),
+                          person_Ach_pos = Ach_pos - personal_mean_Ach_pos, # Differenz von Werte zu individuelle Mittelwerte
+                          person_Av_neg = Av_neg - personal_mean_Av_neg,
+                          person_ES_own = ES_own - personal_mean_ES_own) %>% as.data.frame() %>% arrange(id)
+
+##########################################################################
+######################## 4.10 Unterschiedliche Datensaetze ###############
+##########################################################################
+
+# daten_G13 hat jetzt nur noch Tagebuecher Daten mit Interaktionen drinnen
+
+daten_G13_centering_trait <- daten_G13_centering %>% filter(QUESTNNR =="AVZ6LABOR")
+
+daten_G13_centering_filt_P_close <- daten_G13_centering %>%  filter(!is.na(person_P_close)) 
+
+daten_G13_centering_filt_P_close_EI_1 <- daten_G13_centering_filt_P_close %>%  filter(!is.na(person_EI_1)) 
+
+
+### listwise deletion für Eintraege, die in eins von diesen Variablen ein Missing haben - macht somit Modelle vergleichbar
+daten_alles<- na.omit(daten_G13_centering_filt_P_close_EI_1[,c("id","ES_own","Ach_pos", "Av_neg",
+                                                               "famrela_attain",
+                                                               "Manip_recode_num", 
+                                                               "famrela_imp",
+                                                               "age",
+                                                               "sex",
+                                                               "person_P_close", "person_EI_1",
+                                                               "P_focus", "ES_const", "ES_other", "EI_1", "P_close", "EI_1", "P_close", "Manip")])
+
+
+# Aggregieren fuer 2 Level Modell
+daten_alles_agg<-daten_alles %>%
+  group_by(id, Manip_recode_num) %>% 
+  summarise_each(funs(mean))
+
+daten_alles_agg_filt<- filter(daten_alles_agg,!id %in% c(298,	168))
+daten_alles_filt<- filter(daten_alles,!id %in% c(298,	168))
+
+# ---------------------------------------------------------
+# --------------- C. Deskiptive Statistiken ---------------
+# ---------------------------------------------------------
+
+
+## Mittelwerte und SD
+library(purrr)
+means<-daten_alles_agg_filt %>% select(Ach_pos,	Av_neg,	
+                                       ES_own,	
+                                       EI_1,
+                                       P_close,
+                                       Manip_recode_num,
+                                       famrela_imp,
+                                       famrela_attain,
+                                       age,
+                                       sex) %>% map_dbl(mean)
+
+
+sd<-daten_alles_agg_filt %>% select(Ach_pos,	Av_neg,	
+                                    ES_own,	
+                                    EI_1,
+                                    P_close, Manip_recode_num,
+                                    famrela_imp,
+                                    famrela_attain,
+                                    age,
+                                    sex) %>% map_dbl(sd)
+
+
+
+
+table(daten_G13$DD01)
+
+plot(table(daten_G13$age))
+hist(daten_G13$age)
+hist(daten$age)
+
+# AV pro Manipulation
+summaryBy(Ach_pos~Manip_name, data=daten_alles_agg_filt, FUN=c(mean, sd), na.rm=T)
+summaryBy(Av_neg~Manip_name, data=daten_alles_agg_filt, FUN=c(mean, sd), na.rm=T)
+summaryBy(ES_own~Manip_name, data=daten_alles_agg_filt, FUN=c(mean, sd), na.rm=T)
+
+
+# Predictors pro Manipulation
+summaryBy(famrela_attain~Manip_name, data=daten_G13, FUN=c(mean, sd), na.rm=T)
+summaryBy(famrela_imp~Manip_name, data=daten_G13, FUN=c(mean, sd), na.rm=T)
+
+###################################
+### 1. Verteilung der Variablen ###
+###################################
+
+distr<-daten_G13 %>% filter(QUESTNNR=="AVZ6LABOR")
+hist(distr$famrela_imp) # --> sehr linkssteil
+hist(distr$famrela_attain) # --> sehr rechtssteil
+hist(daten_G13$Av_neg) # --> linkksteil
+hist(daten_G13$Ach_pos) # --> J-foermig
+hist(daten_G13$ES_own) # --> J-foermig
+
+# Kurtosis und Skewness berechnen
+
+spssSkewKurtosis=function(x) {
+  w=length(x)
+  m1=mean(x)
+  m2=sum((x-m1)^2)
+  m3=sum((x-m1)^3)
+  m4=sum((x-m1)^4)
+  s1=sd(x)
+  skew=w*m3/(w-1)/(w-2)/s1^3
+  sdskew=sqrt( 6*w*(w-1) / ((w-2)*(w+1)*(w+3)) )
+  kurtosis=(w*(w+1)*m4 - 3*m2^2*(w-1)) / ((w-1)*(w-2)*(w-3)*s1^4)
+  sdkurtosis=sqrt( 4*(w^2-1) * sdskew^2 / ((w-3)*(w+5)) )
+  mat=matrix(c(skew,kurtosis, sdskew,sdkurtosis), 2,
+             dimnames=list(c("skew","kurtosis"), c("estimate","se")))
+  return(mat)
+}
+
+
+spssSkewKurtosis(daten_alles_agg_filt$Ach_pos)
+spssSkewKurtosis(daten_alles_agg_filt$Av_neg)
+spssSkewKurtosis(daten_alles_agg_filt$ES_own)
+spssSkewKurtosis(daten_alles_agg_filt$person_EI_1)
+spssSkewKurtosis(daten_alles_agg_filt$person_P_close)
+spssSkewKurtosis(daten_alles_agg_filt$famrela_imp)
+spssSkewKurtosis(daten_alles_agg_filt$famrela_attain)
+spssSkewKurtosis(daten_alles_agg_filt$age)
+
+ICCbare(id, Ach_pos, daten_alles_agg_filt)
+ICCbare(id, Av_neg, daten_alles_agg_filt)
+ICCbare(id, ES_own, daten_alles_agg_filt)
+ICCbare(id, person_EI_1, daten_alles_agg_filt)
+ICCbare(id, person_P_close, daten_alles_agg_filt)
+
+###########################################
+### 2. Vergleich Baseline und SF-Gruppe ###
+###########################################
+
+## Filtern von den Leuten, die keine Daten haben an eines der beiden Testtagen fuer paired ttest
+ttest <- daten_alles_agg_filt %>%
+  filter(duplicated(id) | duplicated(id, fromLast=TRUE)) %>%
+  arrange(Manip_recode_num, id)
+
+# Signifikanztestung der Unterschiede
+t.test(ttest$person_EI_1 ~ as.factor(ttest$Manip_recode_num), paired = T)
+t.test(ttest$person_P_close ~ as.factor(ttest$Manip_recode_num), paired = T)
+t.test(ttest$Av_neg ~ as.factor(ttest$Manip_recode_num), paired = T)
+t.test(ttest$Ach_pos ~ as.factor(ttest$Manip_recode_num), paired = T)
+t.test(ttest$ES_own ~ as.factor(ttest$Manip_recode_num), paired = T)
+t.test(ttest$P_focus ~ as.factor(ttest$Manip_recode_num), paired = T)
+
+# tatsaechlichen Mittelwerte ausrechnen
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggEI_1 = mean(EI_1, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggP_close = mean(P_close, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggAch_pos = mean(Ach_pos, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggAv_neg = mean(Av_neg, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggES_own = mean(ES_own, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggdiff = mean(famrela_attain, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggdimp = mean(famrela_imp, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggdimp = mean(P_focus, na.rm=T))
+
+# tatsaechlichen SD ausrechnen
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggEI_1 = sd(EI_1, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggP_close = sd(P_close, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggAch_pos = sd(Ach_pos, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggES_own = sd(Av_neg, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggES_own = sd(ES_own, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggdiff = sd(famrela_attain, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggdimp = sd(famrela_imp, na.rm=T))
+ttest%>% group_by(Manip_recode_num) %>% summarise(aggP_close = sd(P_focus, na.rm=T))
+
+
+aggr_Ach_pos_ttest<-daten_alles_agg_filt %>% group_by(id, Manip_recode_num) %>% summarise(aggr_Ach_pos =mean(Ach_pos, na.rm=T))
+aggr_Av_neg_ttest<-daten_alles_agg_filt %>% group_by(id, Manip) %>% summarise(aggr_Av_neg =mean(Av_neg, na.rm=T))
+
+# Datensatz vorbereiten: Mittelwerte aggreggieren ueber Individuen pro Tag, weil nicht alle haben gleich viele Eintraege pro Tag
+aggr_ttest<-ttest %>% group_by(id, Manip) %>% summarise_at(.vars = vars(Av_neg,Ach_pos,ES_own),
+                                                                  .funs = c(aggr="mean"), na.rm=T)
+
+
+##############################################################
+################### 3. Korrelative Analysen ################## --> fuer Korrelationsmatrix
+##############################################################
+
+# Praediktoren Korrelationen
+# Goal importance
+cor.test(Lab_def$fam_trait_imp, Lab_def$rel_trait_imp, na.rm=T, method = "spearman")
+# Goal attainability
+cor.test(Lab_def$fam_attain, Lab_def$rel_attain, na.rm=T, method = "spearman")
+
+
+# Korrelation zwischen Diary-Diary Variablen
+cormatrix_Diary <- daten_alles_agg_filt %>% select(Ach_pos, Av_neg, ES_own, person_EI_1, person_P_close, Manip_recode_num)
+round(cor(cormatrix_Diary, use = "complete.obs", method = "spearman"),3)                                                                                                 
+rcorr(as.matrix(cormatrix_Diary), type=c("spearman"))
+
+cormatrix_Diary <- daten_alles %>% select(Ach_pos, Av_neg, ES_own, person_EI_1, person_P_close)
+
+# Korrelation zwischen Lab Variablen 
+cormatrix_Lab <- daten_alles_agg_filt %>% select(
+                                         famrela_imp, famrela_attain, age, sex)
+
+round(cor(cormatrix_Lab, use = "complete.obs", method = "spearman"),3)                                                                                                 
+rcorr(as.matrix(cormatrix_Lab), type=c("spearman"))
+
+# Korrelation zwischen Lab und Diary Variablen 
+cormatrix_Diary_Lab <- daten_alles_agg_filt %>% select(Ach_pos, Av_neg, ES_own, person_EI_1, person_P_close, Manip_recode_num,
+  famrela_imp, famrela_attain, age, sex)
+
+round(cor(cormatrix_Diary_Lab, use = "complete.obs", method = "spearman"),3)                                                                                                 
+rcorr(as.matrix(cormatrix_Diary_Lab), type=c("spearman"))
+
+
+# -----------------------------------------------------
+# --------------- D. Data Screening -------------------
+# -----------------------------------------------------
+
+######################################
+#### Normalverteilung der Daten  ##### --> braucht es nicht, weil Likert Skalen
+######################################
+qqp(daten_G13$Av_neg , "norm")
+
+# Shapiro Wilk test für 
+library("ggpubr")
+
+shapiro.test(daten_alles_agg_filt$Ach_pos)
+shapiro.test(daten_alles_agg_filt$Av_neg)
+shapiro.test(daten_alles_agg_filt$ES_own)
+shapiro.test(daten_alles_agg_filt$person_EI_1)
+shapiro.test(daten_alles_agg_filt$age)
+shapiro.test(daten_alles_agg_filt$famrela_attain)
+shapiro.test(daten_alles_agg_filt$famrela_imp)
+
+
+
+#################################################
+### Datenvisualisierung von Zusammenhaengen #####
+#################################################
+
+# Plot von sign. Interaction zw. Manip und Attain fuer ES_own bei Experimental Design 
+plot_model(randomlntercept_fix_Manip_attain_int , type = "pred", terms = c("famrela_attain", "Manip_recode_num"))
+
+
+library(lattice) # for Lattice graphics
+trellis.device(color=FALSE) # to get black-and-white figures
+
+
+
+imp<-daten_alles_agg_filt %>% filter(famrela_imp > 3.5)
+## Zusammenhang Value und Expectancy mit Ach_pos 1 = SF, 2 = BL
+xyplot(Ach_pos ~ famrela_imp | Manip_recode_num, data = daten_alles_agg_filt, main="Titel", type=c("p", "r", "smooth"), span=1)
+xyplot(Ach_pos ~ famrela_attain | Manip_recode_num, data = imp, main="Titel", type=c("p", "r", "smooth"), span=1)
+
+## Zusammenhang Value und Expectancy mit Av_neg
+# interessant, bei Av_neg gibt es neg. Zusammenhaenge mit famrela_attain
+xyplot(Av_neg ~ famrela_imp | Manip_recode_num, data = daten_G13, main="Titel", type=c("p", "r", "smooth"), span=1)
+xyplot(Av_neg ~ famrela_attain | Manip_recode_num, data = daten_alles, main="Titel", type=c("p", "r", "smooth"), span=1)
+
+
+## Zusammenhang zw. Value und Expectancy mit Av_neg
+# mit ES_own, aehnlich zu Ach_pos
+xyplot(ES_own ~ famrela_imp | Manip_recode_num, data = daten_alles, main="Titel", type=c("p", "r", "smooth"), span=1)
+xyplot(ES_own ~ famrela_attain | Manip_recode_num, data = daten_alles_slice, main="Titel", type=c("p", "r", "smooth"), span=1)
+
+
+
+
+###################################################
+############### Datenvisualisierung ###############
+###################################################
+
+
+daten_imp_cat <- daten_alles_agg_filt %>% mutate(imp_cat=cut(famrela_imp, breaks= c(-Inf, 3, Inf), labels=c("imp_low","imp_high")))
+
+
+age_cat <- daten_alles_agg_filt %>% mutate(age_cat=cut(age, breaks= c(-Inf, 35, 65, Inf), labels=c("young","middle", "old")))
+
+# gespalten nach Manipulation
+ggplot(daten_imp_cat, mapping = aes(x =famrela_attain , y = Ach_pos, color = imp_cat)) +
+  geom_point(alpha =0.2)+
+  geom_smooth(color = "red") +
+  scale_x_continuous(limits = c(0, 6)) + 
+  scale_y_continuous(limits = c(0, 6)) +
+  facet_grid(~ imp_cat) +
+  theme_bw()
+
+
+## Alle Leute
+ggplot(daten_alles_agg_filt, mapping = aes(x = famrela_attain , y = Av_neg, size = famrela_imp)) +
+  geom_point(alpha =0.2)+
+  geom_smooth(color = "red") +
+  scale_x_continuous(limits = c(0, 6)) + 
+  scale_y_continuous(limits = c(0, 6)) +
+  theme_bw()
+
+
+##############################################
+#### Plotting fuer Darstellung der Daten ##### --> braucht es nicht, weil Likert Skalen
+##############################################
+
+ggplot(daten_alles_agg_filt, aes(x = famrela_attain, y = Av_neg)) + geom_density(alpha = 0.5)
+
+plot(daten_G13$famrela_imp, daten_G13$ES_own)
+
+daten %>%
+  gather(Manip, ES_own) %>%
+  mutate(id = factor(id)) %>%
+  group_by(Manip) %>%
+  do(
+    qplot(data = ., x = Manip, y = ES_own, geom = "line", group = id, color = id, main = paste("variable =", .$variable)) +
+      ggsave(filename = paste0(.$variable, ".png")
+      )
+  ) 
+
+# 3 verschiedene Variablen plotten
+ggplot(daten_G13, aes(famrela_attain, famrela_imp, color=Ach_pos)) +
+  geom_jitter(height = 0) 
+
+daten_G13$Ach_pos_fac<-as.factor(daten_G13$Ach_pos)
+daten_G13$Av_neg_fac<-as.factor(daten_G13$Av_neg)
+daten_G13$ES_own_fac<-as.factor(daten_G13$ES_own)
+
+# Violin Plot 
+daten_G13 %>% mutate(group = reorder(Ach_pos_fac, famrela_attain, median)) %>% 
+  ggplot(aes( Ach_pos_fac, famrela_attain )) + geom_violin(fill = "blue")
+
+
+
+# Viele Histogramme je nach Ausprägung von Effort
+daten_G13 %>% mutate(group = reorder(ES_own_fac,famrela_attain,  median)) %>%
+  ggplot(aes(x=famrela_attain, y=ES_own_fac, height=..density..)) +
+  geom_joy(scale=0.85)
+
+boxplot(daten$fam_trait_imp)
+boxplot(daten$ES_own)
+
+plot<-ggplot(df_wide, aes(df_wide$fam_trait_imp, df_wide$`ES_own.2 _ 7`))
+ggplot(daten, aes(daten$fam_trait_imp, daten$fam_attain)) +  geom_point(alpha = 0.25) + geom_smooth(method="lm")
+
+# Funktioniert nicht, muss noch herausfinden, wie man plottet mit einem graph pro Gruppen 
+ggplot(daten, aes(fam_trait_imp_Lab, ES_own)) +  geom_point(alpha = 0.25) + geom_smooth(method="lm")
+
+
+
+
+############################################
+### 1. Assumption Linearity of Residuals ### --> nicht erfuellt
+############################################
+
+# Zusammenhang zw Residuen und Auspraegung von AV
+linearity_Av_neg <- plot(resid(MLM_Av_neg), daten_alles$Av_neg)
+linearity_Ach_pos <- plot(resid(MLM_Ach_pos), daten_alles$Ach_pos)
+linearity_ES_own <- plot(resid(MLM_ES_own), daten_alles$ES_own)
+
+
+cor.test(resid(MLM_Av_neg), daten_alles$Av_neg)
+
+#############################################
+### 2. Assumption Homogeinity of Variance ### --> zwischen Baseline und Selbstfokus-Tag
+#############################################
+
+# Ach_pos
+daten_G13$fit_Res_Ach_pos<- residuals(MLM_Ach_pos) #extracts the residuals and places them in a new column in our original data table
+daten_G13$Abs_fit_Res_Ach_pos <-abs(daten_G13$fit_Res_Ach_pos) #creates a new column with the absolute value of the residuals
+
+daten_G13$fit_Res2_Ach_pos <- daten_G13$Abs_fit_Res_Ach_pos^2 #squares the absolute values of the residuals to provide the more robust estimate
+Levene_Ach_pos<- lm(fit_Res2_Ach_pos ~ Manip_recode_num, data=daten_G13) #ANOVA of the squared residuals
+anova(Levene_Ach_pos) #displays the results
+
+# Av_neg --> sign
+daten_G13$fit_Res_Av_neg<- residuals(MLM_Av_neg) #extracts the residuals and places them in a new column in our original data table
+daten_G13$Abs_fit_Res_Av_neg <-abs(daten_G13$fit_Res_Av_neg) #creates a new column with the absolute value of the residuals
+
+daten_G13$fit_Res2_Av_neg <- daten_G13$Abs_fit_Res_Av_neg^2 #squares the absolute values of the residuals to provide the more robust estimate
+Levene_Av_neg<- lm(fit_Res2_Av_neg ~ Manip_recode_num, data=daten_G13) #ANOVA of the squared residuals
+anova(Levene_Av_neg) 
+
+# ES_own --> sign
+daten_G13$fit_Res_ES_own<- residuals(MLM_ES_own) #extracts the residuals and places them in a new column in our original data table
+daten_G13$Abs_fit_Res_ES_own <-abs(daten_G13$fit_Res_ES_own) #creates a new column with the absolute value of the residuals
+
+daten_G13$fit_Res2_ES_own <- daten_G13$Abs_fit_Res_ES_own^2 #squares the absolute values of the residuals to provide the more robust estimate
+Levene_ES_own<- lm(fit_Res2_ES_own ~ Manip_recode_num, data=daten_G13) #ANOVA of the squared residuals
+anova(Levene_ES_own) 
+
+#############################################################
+### 3. Assumption normally distributed residuals of model ### --> erfuellt nicht
+#############################################################
+
+qqnorm(residuals(MLM_ES_own))
+qqline(residuals(MLM_ES_own))
+qqmath(residuals(MLM_ES_own, id=0.05)) #id: identifies values that may be exerting undue influence on the model (i.e. outliers)
+hist(residuals(MLM_ES_own))
+
+qqnorm(residuals(MLM_Av_neg))
+qqline(residuals(MLM_Av_neg))
+qqmath(residuals(MLM_Av_neg, id=0.05)) #id: identifies values that may be exerting undue influence on the model (i.e. outliers)
+hist(residuals(MLM_Av_neg))
+
+qqnorm(residuals(MLM_Ach_pos))
+qqline(residuals(MLM_Ach_pos))
+qqmath(residuals(MLM_Ach_pos, id=0.05)) #id: identifies values that may be exerting undue influence on the model (i.e. outliers)
+hist(residuals(MLM_Ach_pos))
+
+mean(residuals(MLM_Av_neg ), na.rm=T)
+mean(residuals(MLM_ES_own ), na.rm=T)
+mean(residuals(MLM_Ach_pos), na.rm=T)
+
+
+# Normaverteilung von random Effects (plot(ranef(Modell)))
+plot(ranef(MLM_ES_own))
+# Es braucht Normalverteilung von random effects (von jeder Manip von jeder ID)
+
+# Normalverteilung der Residuen (plot(Modell))
+plot(randomlntercept_fix_Manip_attain_int)
+plot(randomlnterceptOnly)
+
+
+##############################################
+############ Manipulation Check ############## 
+##############################################
+
+# Effect of Manip on Self-Focus (P_focus)
+
+# schauen ob random Effekt bei id für P_focus sich lohnt 
+interceptOnly_ManipCheck <-gls(P_focus ~ 1, data = daten_alles_agg_filt, method = "ML", na.action = na.exclude)
+summary(interceptOnly_ManipCheck)
+
+ManipCheck1 <-lme(P_focus ~ 1, data = daten_alles_agg_filt, 
+                  random = ~ 1 | id, method = "ML", na.action = na.exclude) # muss AV je nachdem ersetzen mit Av_neg, ES_own, Ach_pos
+summary(ManipCheck1)
+
+# Modellvergleich zwischen unconditional means model und random id Model --> es lohnt sich id als random effect einzusetzen
+anova(interceptOnly_ManipCheck, ManipCheck1)
+
+
+# Manip als Predictor einfuegen
+ManipCheck2 <-lme(P_focus ~ Manip_recode_num, data = daten_alles_agg_filt, 
+                  random = ~ 1 | id, method = "ML", na.action = na.exclude) 
+summary(ManipCheck2)
+
+r2beta(ManipCheck2)
+
+
+ggplot(daten_G13, aes(daten_G13$Manip, daten_G13$P_focus, color = famrela_imp)) +  geom_point(alpha = 0.25) + geom_smooth(method="lm") 
+
+
+###############################
+#### Liniengrafik von MC ######
+###############################
+library(ggplot2)
+library(Rmisc) # fuer Konfidenzintervalle ausrechnen
+
+Grafik_ManipCheck <- summarySE(daten_G13, measurevar="P_focus", groupvars="Manip_name", na.rm=T)
+
+# ci = Konfidenzintervalle
+ggplot(Grafik_ManipCheck, 
+       aes(x=Manip_name, y=P_focus, color = Manip_name, na.rm=T)) + 
+  geom_errorbar(aes(ymin=P_focus-ci, ymax=P_focus+ci), width=.1, na.rm=T) +
+  geom_line(na.rm=T) +
+  geom_point(na.rm = T) +
+  ylim(0,6) +
+  xlab ("Manipulation") +
+  ylab ("Focus on the other person")
+
+
+Grafik_Av_neg_Grp <- summarySE(daten_G13, measurevar="Av_neg", groupvars="Manip_name", na.rm=T)
+
+# ci = Konfidenzintervalle
+ggplot(Grafik_Av_neg_Grp, aes(x=Manip_name, y=Av_neg, na.rm=T)) + 
+  geom_errorbar(aes(ymin=Av_neg-ci, ymax=Av_neg+ci), width=.1, na.rm=T) +
+  geom_line(na.rm=T) +
+  geom_point(na.rm = T) +
+  ylim(0,6) +
+  xlab ("Manipulation") +
+  ylab ("Avoidance Motivation")
+
+
+# -----------------------------------------------------
+# --------------- E. Hypothesenpruefung ---------------
+# -----------------------------------------------------
+
+
+# ================================================================
+# ===================== Ignoring data strucutre ==================
+# ================================================================
+
+##################################################
+#### klassische lineare Regression ############### 
+##################################################
+
+# lineare Regression ohne Berücksichtigung der Hierarchie
+daten_G13_centering_trait <- daten_G13_centering %>% filter(QUESTNNR =="AVZ6LABOR")
+linMod<-lm(Av_neg ~ famrela_attain + famrela_imp + Manip_recode_num:famrela_attain, data = daten_alles)
+summary(linMod)
+ggplot(daten_G13, aes(daten_G13$famrela_imp, daten_G13$ES_own)) +  geom_point(alpha = 0.25) + geom_smooth(method="lm")
+
+# ANCOVA mit Kontrollvariable Attainability
+linModANCOVA<-lm(Av_neg ~ famrela_attain + famrela_imp, data = daten_alles)
+summary(linModANCOVA)
+
+
+linMod<-lm(famrela_imp ~ age, data = daten_G13_centering)
+
+# ================================================================
+# ===================== Multilevel Modeling  ===================== --> muss AV entsprechend abaendern
+# ================================================================
+## extra_ Limitierung der Iterationen fuer Vorbeugung von Error Meldungen bei Hinzufuegen von random effects
+# zusaetzlicher Befehl im Code von lme(), undzwar control=ctr
+ctrl <- lmeControl(opt='optim')
+
+
+#############################################
+##### Braucht es ueberhaupt ein MLM? ######## --> ja, fuer alle 3 Outcome Variablen
+#############################################
+# Es braucht Varianz ueber die ID hinweg
+
+
+# Random Intercepts, "pre" unconditional means model
+uncondit_means <-gls(Ach_pos~ 1, data = daten_alles_agg_filt, method = "ML", na.action = na.exclude)
+
+summary(uncondit_means)
+
+
+# unconditional means model mit random intercepts 
+randomlntercept <-lme(Ach_pos ~ 1, data = daten_alles_agg_filt, random = ~ 1 
+                          | id, method = "ML", na.action = na.exclude) # muss AV je nachdem ersetzen mit Av_neg, ES_own, Ach_pos
+
+summary(randomlntercept)
+anova(uncondit_means,randomlntercept)
+
+
+# Intercepts duerfen ueber die Individuen variieren
+
+# Testen auf signifikante Verbesserung des Fits zwischen intercepts und random intercepts ueber ID hinweg
+anova(uncondit_means, randomlntercept) # alle Anovas sind signifikant, ModellFit verbessert durch random effect ID bei allen Variablen
+
+
+
+#################################################################################################### 
+##### Fixed effects hinzufuegen: Praediktor (Intrinsic Goal Value und Goal Expectancy) #############
+####################################################################################################  
+
+#### 1. Praediktor hinzufuegen: goal difficulty = attain
+
+randomlntercept <-lme(Av_neg ~ 1 , data = daten_alles_agg_filt, random = ~ 1 
+                          | id, method = "ML", na.action = na.exclude)
+
+randomlntercept_fix_attain <-lme(Ach_pos~ famrela_attain +
+                                   
+                                   famrela_imp +
+                                 age +
+                                   sex +  
+                                   person_P_close +
+                                   person_EI_1,
+                                 random = ~ 1 | id, 
+                                 data = daten_alles_agg_filt, 
+                                 method = "ML", na.action = na.exclude)
+summary(randomlntercept_fix_attain)
+intervals(randomlntercept_fix_attain)
+
+# Vergleich mit vorherigem Modell
+anova(randomlntercept, randomlntercept_fix_attain)
+# Es hat sich sign. verbessert
+
+randomlntercept_fix_attain <-lme(Ach_pos~ famrela_attain + 
+                                   famrela_imp +
+                                   age +
+                                   sex +  
+                                   person_P_close +
+                                   
+                                   person_EI_1, data = daten_alles_agg_filt, 
+                                 random = ~ 1 | id, method = "ML", na.action = na.exclude)
+
+
+summary(randomlntercept_fix_attain)
+#### 2. Praediktor hinzufuegen (Manipulationstag) Baseline = 2, Self-Focus = 1
+randomlntercept_fix_attain <-lme(Av_neg~ famrela_attain + 
+                                   famrela_imp +
+                                   age +
+                                   sex +  
+                                   person_P_close +
+                                   person_EI_1, data = daten_alles_agg_filt, 
+                                random = ~ 1 | id, method = "ML", na.action = na.exclude)
+
+
+randomlntercept_fix_attain_Manip <-lme(Av_neg~ famrela_attain + 
+                                         Manip_recode_num +
+                                         famrela_imp +
+                                         age +
+                                         sex +  
+                                         person_P_close +
+                                         person_EI_1, 
+                                       data = daten_alles_agg_filt, 
+                                       random = ~ 1| id, method = "ML", na.action = na.exclude)
+
+summary(randomlntercept_fix_attain_Manip)
+
+anova(randomlntercept_fix_attain , randomlntercept_fix_attain_Manip)
+# keine sign. Verbesserung des oberem Modell
+
+anova(randomlntercept , randomlntercept_fix_attain_Manip)
+
+#######################################################
+##### Random slope fuer Manip einfuegen ###############
+#######################################################
+
+# random slope Modell
+randomlntercept_fix_attain_Manip_rand_Manip <-lme(ES_own
+                                                  ~ famrela_attain + 
+                                                    Manip_recode_num +
+                                                    famrela_imp +
+                                                    age +
+                                                    sex +  
+                                                    person_P_close +
+                                                    person_EI_1, 
+                                                  data = daten_alles_agg_filt, 
+                                                  random = ~ Manip_recode_num| id, method = "ML", na.action = na.exclude)
+
+summary(randomlntercept_fix_attain_Manip_rand_Manip)
+anova(randomlntercept_fix_attain_Manip, randomlntercept_fix_attain_Manip_rand_Manip)
+
+
+#######################################################################################
+##### Final Main effect Model Goal Expectancy, Goal Value, Manipulation ###############
+#######################################################################################
+
+randomlntercept_fix_attain_Manip <-lme(ES_own ~ famrela_attain + 
+                                         Manip_recode_num+
+                                         famrela_imp+ 
+                                         age +
+                                         sex +
+                                         person_P_close +
+                                         person_EI_1,
+                                       data = daten_alles_agg_filt,
+                                       control = ctrl,
+                                       random = ~ 1| id, method = "ML", na.action = na.exclude)
+                                                      
+
+summary(randomlntercept_fix_attain_Manip)
+intervals(randomlntercept_fix_attain_Manip)
+
+
+# Multikollinearitaet testen
+vif(randomlntercept_fix_attain_Manip)
+
+windows()
+par(mfrow=c(2,2
+            )) # init 4 charts in 1 panel
+qqnorm(randomlntercept_fix_attain_Manip)
+qqnorm(resid(randomlntercept_fix_attain_Manip))
+
+
+scatter <- ggplot(daten_alles_agg_filt, aes(fitt, resi))
+scatter + geom_point() + geom_smooth(method = "lm", colour = "Blue")+ labs(x = "Fitted
+Values", y = "Studentized Residual")
+
+fitt<-fitted(randomlntercept_fix_attain_Manip, asList = TRUE)
+randomlntercept_fix_attain_Manip$resi<-residuals(randomlntercept_fix_attain_Manip)
+durbinWatsonTest(randomlntercept_fix_attain_Manip$resi)
+
+############################################################################
+##### Interaction effect Model: Goal Value x Goal Expectancy  ##############
+############################################################################
+Final_IA_trait_imp_x_attain <-lme(Ach_pos  ~ 
+                                         famrela_attain +
+                                         Manip_recode_num +
+                                         famrela_imp +
+                                         age +
+                                         sex +  
+                                         person_P_close +
+                                         person_EI_1 +
+                                         famrela_imp:famrela_attain,
+                                       data = daten_alles_agg_filt,
+                                       control = ctrl,
+                                       random = ~ 1| id, method = "ML", na.action = na.exclude)
+
+
+
+
+summary(Final_IA_trait_imp_x_attain)
+intervals(Final_IA_trait_imp_x_attain)
+
+simple_slopes(Final_IA_trait_imp_x_attain)
+
+graph_model(Final_IA_trait_imp_x_attain, Ach_pos, famrela_attain , 
+            lines = famrela_imp,
+            errorbars = "CI")
+
+vif(Final_IA_trait_imp_x_attain)
+                                                                                                                                                                                                             
+#####################################################################
+##### Interaction effect Model Manipulation x Attainability  ########
+#####################################################################
+
+Final_IA_Manip_x_attain <-lme(Ach_pos ~ famrela_attain +
+                                                    Manip_recode_num +
+                                                    famrela_imp +
+                                                    age +
+                                                    sex +  
+                                                    person_P_close +
+                                                    person_EI_1 +
+                                             famrela_attain:Manip_recode_num, 
+                                                  data = daten_alles_agg_filt,
+                                                  control = ctrl,
+                                                  random = ~ 1| id, method = "ML", na.action = na.exclude)
+intervals(Final_IA_Manip_x_attain)
+
+summary(Final_IA_Manip_x_attain)
+
+simple_slopes(Final_IA_Manip_x_attain)
+
+graph_model(Final_IA_Manip_x_attain, Ach_pos,Manip_recode_num, 
+            lines = famrela_attain ,
+            errorbars = "CI")
+
+vif(Final_IA_Manip_x_attain)
+
+
+
+######################################################################
+#### Explorative Analysen: Relationship Closeness als Moderator ###### 
+######################################################################
+
+# Moderation zw. Goal Expectancy x Relationship Closeness
+Rela_close_int_attain_P_close <-lme(ES_own ~ famrela_attain:person_P_close + 
+                                      famrela_attain +
+                                         Manip_recode_num+
+                                         famrela_imp+ 
+                                         age +
+                                         sex +  
+                                         person_P_close +
+                                         person_EI_1,
+                                       data = daten_alles_agg_filt,
+                                       control = ctrl,
+                                       random = ~ 1| id, method = "ML", na.action = na.exclude)
+summary(Rela_close_int_attain_P_close)
+intervals(Rela_close_int_attain_P_close)
+
+
+simple_slopes(Rela_close_int_attain_P_close)
+
+graph_model(Rela_close_int_attain_P_close, Ach_pos, famrela_attain, 
+            lines = person_P_close,
+            errorbars = "CI",
+            ymin = 3,
+            ymax = 5,
+            draw.legend = TRUE)
+            
+ggplot(data=daten_alles_agg_filt, aes(x=famrela_attain, y=Ach_pos, group=Manip, colour=Manip)) +
+  geom_line(size = 1) +
+  geom_point() 
+  
+
+# Moderation zw. Intrinsic Goal Value x Relationship closeness
+Rela_close_int_trait_imp_P_close <-lme(Ach_pos ~ famrela_imp:person_P_close + 
+                                         famrela_attain +
+                                         Manip_recode_num+
+                                         famrela_imp+ 
+                                         age +
+                                         sex +  
+                                         person_P_close +
+                                         person_EI_1,
+                                       data = daten_alles_agg_filt,
+                                       control = ctrl,
+                                       random = ~ 1| id, method = "ML", na.action = na.exclude)
+                       
+
+summary(Rela_close_int_trait_imp_P_close)
+intervals(Rela_close_int_trait_imp_P_close)
+
+simple_slopes(Rela_close_int_trait_imp_P_close)
+
+graph_model(Rela_close_int_trait_imp_P_close, Ach_pos, Manip_recode_num, 
+            lines = person_P_close,
+            errorbars = "CI",
+            ymin = 3,
+            ymax = 5,
+            draw.legend = TRUE)
+
+# Moderation zw. Manipulation Day x Relationship Closeness
+Rela_close_int_Manip_P_close <-lme(ES_own  ~ Manip:person_P_close +
+                                         famrela_attain +
+                                         Manip+
+                                         famrela_imp+ 
+                                         age +
+                                         sex +  
+                                         person_P_close +
+                                         person_EI_1,
+                                       data = daten_alles_agg_filt,
+                                       control = ctrl,
+                                       random = ~ 1| id, method = "ML", na.action = na.exclude)
+
+summary(Rela_close_int_Manip_P_close)
+intervals(Rela_close_int_Manip_P_close) # CI
+simple_slopes(Rela_close_int_Manip_P_close) # Simple Slopes
+
+graph_model(Rela_close_int_Manip_P_close, ES_own, Manip, 
+            lines = person_P_close,
+            errorbars = "CI",
+            ymin = 3,
+            ymax = 5,
+            draw.legend = TRUE)
+
+
+
+##############################################################################################################
+#################### Explorative Analysen: Manipulation Day x Intrinsic Goal Value  ##########################
+##############################################################################################################
+
+Rela_close_int_Manip_trait_imp <-lme(Av_neg  ~ Manip_recode_num:famrela_imp + 
+                                 famrela_attain +
+                                 Manip_recode_num+
+                                 famrela_imp+ 
+                                 age +
+                                 sex +  
+                                 person_P_close +
+                                 person_EI_1,
+                               data = daten_alles_agg_filt,
+                               control = ctrl,
+                               random = ~ 1| id, method = "ML", na.action = na.exclude)
+
+summary(Rela_close_int_Manip_trait_imp)
+intervals(Rela_close_int_Manip_trait_imp)
+
+
+
+#####################################################################
+########### Multikollinearitaet von den Praediktoren ################
+#####################################################################
+vif(finalModel1)
+vif(addRandomSlope1)
+
+randomlntercept_fixfamrela_imp_attain_center <-lme(person_Ach_pos ~ famrela_imp + famrela_attain, control=ctrl,
+                                                       data = daten_G13, random = ~ 1 | id, method = "ML", na.action = na.exclude)
+
+randomlntercept_fixfamrela_imp_attain <-lme(Ach_pos ~ famrela_imp + famrela_attain, control=ctrl,
+                                                       data = daten_G13, random = ~ 1 | id, method = "ML", na.action = na.exclude)
+
+
+# Bedingungen testen
+cor.test(daten_G13$Av_neg, daten_G13$Ach_pos)
+## multicollinearity
+cor(data[, "Spaltennummer der dimensionalen Variablen, die untersuchen will")]) # es darf nichts über 0.9 sein
+
+
+
+#===========================================================================================================
+#### Ueberpruefung, ob das **lineare** Modell auch wirklich fitted und die Residuen normalverteilt sind ====
+#===========================================================================================================
+
+
+MLM_Ach_pos <-lme(Ach_pos~ famrela_attain+ 
+                                 Manip_recode_num + 
+                                 Manip_recode_num:famrela_attain +
+                                 famrela_imp +
+                                 age +
+                                 sex +
+                                 person_P_close +
+                                 person_EI_1,
+                               control=ctrl,
+                               data = daten_alles, 
+                               random = ~ 1 | id, method = "ML", na.action = na.exclude)
+summary(MLM_Ach_pos)
+
+MLM_Ach_pos_no <-lme(Ach_pos~ famrela_attain+ 
+                    Manip_recode_num + 
+                    Manip_recode_num:famrela_attain +
+                    famrela_imp +
+                    age +
+                    sex +
+                    person_P_close +
+                    person_EI_1,
+                  control=ctrl,
+                  data = daten_alles, 
+                  random = ~ 1 | id, method = "ML", na.action = na.exclude)
+
+summary(MLM_Ach_pos_no)
+anova(MLM_Ach_pos_no, MLM_Ach_pos)
+
+MLM_ES_own <-lme(ES_own~ famrela_attain+ 
+                   Manip_recode_num + 
+                   Manip_recode_num:famrela_attain +
+                   famrela_imp +
+                   age +
+                   sex +
+                   person_P_close +
+                   person_EI_1,
+                 control=ctrl,
+                 data = daten_alles, 
+                 random = ~ 1 | id/Manip_recode_num, method = "ML", na.action = na.exclude)
+
+
+
+# Aggregieren von AV Variablen, damit sinnvoller darstellen kann
+
+lowdat<- filter(daten_G13,!id %in% c(268,296,320,365, 434,168, 298)) # Probanden rausfiltern, damit gleiche SP hat wie daten_alles
+
+diary <- lowdat %>% filter(QUESTNNR =="AVZ6DIARY")
+
+blub_ES_own<-aggregate(ES_own ~ id,daten_alles_agg_filt, mean) # aggregieren
+blub_Av_neg<-aggregate(Av_neg ~ id, daten_alles_agg_filt, mean)
+blub_Ach_pos<-aggregate(Ach_pos ~ id, daten_alles_agg_filt, mean)
+blub_P_close<-aggregate(person_P_close ~ id, daten_alles_agg_filt, mean)
+blub_P_EI_1<-aggregate(person_EI_1 ~ id, daten_alles_agg_filt, mean)
+
+hallo1 <- lowdat %>% filter(QUESTNNR =="AVZ6LABOR") # nur noch Labordaten, weil will Labor mit agg Diary daten korrelieren
+
+hallo1$ES_own_aggr<-blub_ES_own$ES_own # zusammenfuegen von aggregierten Daten zu Labordaten
+hallo1$Av_neg_aggr<-blub_Av_neg$Av_neg
+hallo1$Ach_pos_aggr<-blub_Ach_pos$Ach_pos
+hallo1$P_close_aggr<-blub_P_close$P_close
+hallo1$P_EI_1_aggr<-blub_P_EI_1$EI_1
+
+
+# Auf Personenebene
+low<-lowess(hallo1$Av_neg_aggr ~ hallo1$P_EI_1_aggr, f = 0.6)
+plot(low, xlim = c(0,6), ylim = c(0,6))
+lines(low)
+
+# Auf Situationsebene
+library(tidyr)
+tidyy2<-diary %>% drop_na(EI_1)
+
+low<-lowess(tidyy2$Ach_pos~ tidyy2$EI_1, f = 0.6)
+plot(low, xlim = c(0,6), ylim = c(0,6))
+lines(low)
+
+
+# Ach pos Lowess
+low<-lowess(hallo1$Ach_pos_aggr ~ hallo1$famrela_attain, f = 0.6)
+plot(low, xlim = c(0,6), ylim = c(0,6))
+lines(low)
+
+# Avoidance Lowess
+low<-lowess(hallo1$Av_neg_aggr ~ hallo1$famrela_attain, f = 0.6)
+plot(low, xlim = c(0,6), ylim = c(0,6))
+lines(low)
+plot.window
+
+# Avoidance Lowess
+low<-lowess(hallo1$ES_own_aggr ~ hallo1$age, f = 0.6)
+plot(low, xlim = c(0,90), ylim = c(0,6))
+lines(low)
+plot.window
+
+            
+
+
+daten_alles %>% filter(id == 298)
+
+daten_G13 %>% select(id, Manip_recode_num,Av_neg) %>% filter(id == 298)
