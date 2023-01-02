@@ -1,0 +1,75 @@
+USE stats;
+SHOW TABLES;
+DESC postHistory;
+DESC users;
+DESC posts;
+
+-- research question:
+-- What users (age, location) bring the most views?
+-- Views/Reputation Score by country
+-- Views/Reputation Score by age group
+-- What posts (tags) have the most views?
+-- Are the most popular users (high reputation score) also the ones that entered the most data (About me, website URL)
+
+
+
+
+-- check out content of tables
+SELECT * FROM users;
+SELECT * FROM postHistory;
+SELECT * from posts;
+SELECT * FROM comments;
+
+
+SELECT COUNT(Location) FROM users;
+SELECT COUNT(age) FROM users;
+
+
+
+
+-- explore the prevalence of badges
+SELECT COUNT(Name), Name FROM badges
+GROUP BY Name
+ORDER BY COUNT(Name) DESC;
+
+SELECT COUNT(DISTINCT(Id)) FROM users;
+
+
+SELECT title, score, Body FROM posts;
+
+-- gathering metrics
+-- KPIs, measurable performance: 
+-- - users.Views
+-- - users.UpVotes & DownVotes (# of upvotes/downvotes for questions/answers), 
+-- - user.Reputation Score (
+-- - comments.score (upvotes/downvotes for an answer)
+-- - 
+-- - Activity level of the users 
+-- -- timespan: user.CreationDate & LastAccessDate
+-- -- number of posts postHistory.CreationDate
+-- -- badges.name (type of activity and 'milestones reached')
+-- -- posts.AnswerCount: how many answers does the user provoke
+-- -- posts.CommentCount: how many comments does the user provoke
+-- -- posts.ViewCount: how many views does post have
+-- -- posts.FavoriteCount: how many people have bookmarked the post
+
+SELECT displayname FROM users
+ORDER BY displayname DESC;
+
+SELECT ownerdisplayname FROM posts
+ORDER BY ownerdisplayname DESC;
+
+SELECT SUM(ViewCount), SUM(Views), users.id FROM users
+JOIN posts 
+ON users.id = posts.OwnerUserId
+GROUP BY users.id
+ORDER BY id;
+
+
+-- Interesting UVs
+-- - User.Location
+-- - User.Age
+-- - 
+
+
+-- Gap analysis: evaluate whether outcomes align with expectations, what to do in order to improve the outcome
